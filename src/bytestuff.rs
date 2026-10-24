@@ -9,43 +9,25 @@ pub const PATTERN: [u8; 4] = [0xFF, 0xFF, 0xFD, 0xFD];
 /// All patterns of `[0xFF, 0xFF, 0xFD, 0xFD]` will be replaced with `[0xFF, 0xFF, 0xFD]`.
 #[must_use]
 pub fn unstuff_inplace(data: &mut [u8]) -> usize {
-	let mut deleted = 0;
-	let mut state = 0;
-
-	for i in 0..data.len() {
-		if data[i] == PATTERN[state] {
-			state += 1;
+	let mut read = 0;
+	let mut write = 0;
+	while read < data.len() {
+		if data[read..].starts_with(&PATTERN) {
+			data.copy_within(read..read + 3, write);
+			write += 3;
+			read += 4;
 		} else {
-			state = 0;
-		}
-		if state == 4 {
-			state = 0;
-			deleted += 1;
-		} else if deleted > 0 {
-			data[i - deleted] = data[i]
+			data[write] = data[read];
+			write += 1;
+			read += 1;
 		}
 	}
-
-	data.len() - deleted
+	write
 }
 
 /// Calculate the amount of stuffing bytes required for specific data.
 pub fn stuffing_required(data: &[u8]) -> usize {
-	let mut state = 0;
-	let mut count = 0;
-	for &byte in data {
-		if byte == PATTERN[state] {
-			state += 1;
-		} else {
-			state = 0;
-		}
-		if state == 3 {
-			state = 0;
-			count += 1;
-		}
-	}
-
-	count
+	data.windows(3).filter(|window| *window == &PATTERN[..3]).count()
 }
 
 /// Perform byte-stuffing in-place and return the length of the stuffed data.
@@ -130,5 +112,28 @@ mod test {
 		);
 		assert!(stuff(vec![0xFF, 0xFF, 0xFD, 0xFF, 0xFF, 0xFD]).unwrap() == [0xFF, 0xFF, 0xFD, 0xFD, 0xFF, 0xFF, 0xFD, 0xFD]);
 		assert!(stuff(vec![0xFF, 0xFF, 0xFD, 0x00, 0xFF, 0xFF, 0xFD]).unwrap() == [0xFF, 0xFF, 0xFD, 0xFD, 0x00, 0xFF, 0xFF, 0xFD, 0xFD]);
+	}
+}
+
+#[cfg(test)]
+mod overlap_regression {
+	use super::*;
+
+	#[test]
+	fn escaping_handles_runs_of_ff_and_preserves_literal_fd() {
+		for prefix in 2..=8 {
+			// Expected wire bytes are built explicitly, independently of either algorithm.
+			let mut data = vec![0xff; prefix];
+			data.extend_from_slice(&[0xfd, 0xfd, 0x12, 0xff, 0xff, 0xfd]);
+			let mut wire = vec![0xff; prefix];
+			wire.extend_from_slice(&[0xfd, 0xfd, 0xfd, 0x12, 0xff, 0xff, 0xfd, 0xfd]);
+			assert_eq!(stuffing_required(&data), 2);
+			let mut output = data.clone();
+			output.resize(data.len() + 2, 0);
+			let len = stuff_inplace(&mut output, data.len()).unwrap();
+			assert_eq!(&output[..len], wire.as_slice());
+			let len = unstuff_inplace(&mut wire);
+			assert_eq!(&wire[..len], data.as_slice());
+		}
 	}
 }
